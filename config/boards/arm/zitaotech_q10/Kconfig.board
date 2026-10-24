@@ -19,10 +19,12 @@ endmenu
 menu "A320 Trackpad Setting"
 
 config A320_TRACKPAD_SCROLL_INTERVAL
-    int "Trackpad scroll in miliseconds"
+    int "Trackpad movement per scroll step (sensor counts)"
     default 50
-    range 0 200
+    range 1 200
     help
+      In scroll mode the trackpad movement is accumulated, and one wheel step
+      (vertical or horizontal) is sent for every this many sensor counts.
       The bigger this value, the slower the trackpad scrolls
 
 config A320_TRACKPAD_SPEEDMULTIPLIER_VERTICAL

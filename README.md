@@ -47,4 +47,7 @@ This page contains zmk firmware config for bbq10 keyboard pro
 You can change the source code under the ```/config/boards/arm/zitaotech_q10/custom_driver```
 
 For example if you want to change the scroll direction when capslock is activated:
-Go to this [line](https://github.com/ZitaoTech/zmk_config_bbq10_pro/blob/main/config/boards/arm/zitaotech_q10/custom_driver/a320.c#L241) and change ```dy``` to ```-dy```
+Go to `a320_scroll_steps()` in [a320.c](config/boards/arm/zitaotech_q10/custom_driver/a320.c) and change ```scroll_remainder_y -= dy``` to ```scroll_remainder_y += dy``` for vertical scrolling, or ```scroll_remainder_x += dx``` to ```scroll_remainder_x -= dx``` for horizontal scrolling.
+Each swipe scrolls in one direction only: after `SCROLL_AXIS_LOCK_COUNTS` sensor counts it locks to the axis it moved more along, until the finger stops or lifts.
+
+The scroll speed is set by `CONFIG_A320_TRACKPAD_SCROLL_INTERVAL` in `config/zitaotech_q10.conf`: the trackpad movement (sensor counts) per wheel step, the bigger this value, the slower the trackpad scrolls.

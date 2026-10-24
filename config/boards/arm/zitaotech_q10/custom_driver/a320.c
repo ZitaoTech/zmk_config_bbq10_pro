@@ -36,6 +36,16 @@ LOG_MODULE_REGISTER(a320, CONFIG_A320_LOG_LEVEL);
 #define CONFIG_A320_POLL_INTERVAL_MS 2
 #endif
 
+#ifndef CONFIG_A320_TRACKPAD_SCROLL_INTERVAL
+#define CONFIG_A320_TRACKPAD_SCROLL_INTERVAL 50
+#endif
+
+/* Drop the leftover partial scroll step after this long without motion */
+#define SCROLL_IDLE_RESET_MS 200
+
+/* A swipe locks to the axis it moved more along once it has moved this many counts */
+#define SCROLL_AXIS_LOCK_COUNTS 16
+
 /* =========================
  * HID indicators
  * ========================= */
@@ -62,6 +72,13 @@ static bool shift_pressed = false;
 static bool arrow_pressed = false;
 static int64_t last_arrow_time = 0;
 static const struct device *trackpoint_dev_ref = NULL;
+
+static int32_t scroll_remainder_x = 0;
+static int32_t scroll_remainder_y = 0;
+static int64_t scroll_last_motion_ms = 0;
+
+enum scroll_axis { SCROLL_AXIS_NONE, SCROLL_AXIS_X, SCROLL_AXIS_Y };
+static enum scroll_axis scroll_axis = SCROLL_AXIS_NONE;
 
 static struct k_work_delayable arrow_release_work;
 
@@ -174,6 +191,57 @@ static int a320_read_motion_37(const struct device *dev, int16_t *dx, int16_t *d
 }
 
 /* =========================
+ * Scroll accumulation
+ * ========================= */
+
+/*
+ * In scroll mode, accumulate the motion and emit one wheel step for every
+ * CONFIG_A320_TRACKPAD_SCROLL_INTERVAL sensor counts, keeping the remainder, so that
+ * slow swipes scroll too. Each swipe scrolls along one axis only: once it has moved
+ * SCROLL_AXIS_LOCK_COUNTS it locks to the axis it moved more along, until the finger stops
+ * or lifts for SCROLL_IDLE_RESET_MS, so diagonal swipes do not scroll both ways.
+ * Returns the horizontal and vertical wheel steps to report now in steps_x and steps_y.
+ */
+static void a320_scroll_steps(int16_t dx, int16_t dy, bool slow, int64_t now, int32_t *steps_x,
+                              int32_t *steps_y) {
+    int32_t per_step = CONFIG_A320_TRACKPAD_SCROLL_INTERVAL * (slow ? 2 : 1);
+
+    *steps_x = 0;
+    *steps_y = 0;
+
+    if (now - scroll_last_motion_ms > SCROLL_IDLE_RESET_MS) {
+        scroll_remainder_x = 0;
+        scroll_remainder_y = 0;
+        scroll_axis = SCROLL_AXIS_NONE;
+    }
+    scroll_last_motion_ms = now;
+
+    /* Finger right = scroll right; change += to -= to reverse the horizontal direction */
+    scroll_remainder_x += dx;
+    /* Finger up = wheel up; change -= to += to reverse the vertical direction */
+    scroll_remainder_y -= dy;
+
+    if (scroll_axis == SCROLL_AXIS_NONE) {
+        if (MAX(abs(scroll_remainder_x), abs(scroll_remainder_y)) <
+            MIN(SCROLL_AXIS_LOCK_COUNTS, per_step)) {
+            return;
+        }
+        scroll_axis =
+            abs(scroll_remainder_x) > abs(scroll_remainder_y) ? SCROLL_AXIS_X : SCROLL_AXIS_Y;
+    }
+
+    if (scroll_axis == SCROLL_AXIS_X) {
+        scroll_remainder_y = 0;
+        *steps_x = scroll_remainder_x / per_step;
+        scroll_remainder_x -= *steps_x * per_step;
+    } else {
+        scroll_remainder_x = 0;
+        *steps_y = scroll_remainder_y / per_step;
+        scroll_remainder_y -= *steps_y * per_step;
+    }
+}
+
+/* =========================
  * Poll work
  * ========================= */
 
@@ -191,7 +259,7 @@ static void a320_poll_work_handler(struct k_work *work) {
 
             bool capslock = current_indicators & HID_INDICATORS_CAPS_LOCK;
 
-            if (ctrl_pressed) {
+            if (ctrl_pressed && !capslock) {
                 dx /= 2;
                 dy /= 2;
             }
@@ -235,7 +303,17 @@ static void a320_poll_work_handler(struct k_work *work) {
             }
 
             if (capslock) {
-                input_report_rel(data->dev, INPUT_REL_WHEEL, -dy / 16, true, K_FOREVER);
+                int32_t steps_x, steps_y;
+
+                a320_scroll_steps(dx, dy, ctrl_pressed, k_uptime_get(), &steps_x, &steps_y);
+
+                /* Only report full steps; an empty report every 2 ms floods the BLE queue */
+                if (steps_x != 0) {
+                    input_report_rel(data->dev, INPUT_REL_HWHEEL, steps_x, true, K_FOREVER);
+                }
+                if (steps_y != 0) {
+                    input_report_rel(data->dev, INPUT_REL_WHEEL, steps_y, true, K_FOREVER);
+                }
             } else {
                 input_report_rel(data->dev, INPUT_REL_X, dx, false, K_FOREVER);
                 input_report_rel(data->dev, INPUT_REL_Y, dy, true, K_FOREVER);
